@@ -11,50 +11,48 @@ from tqdm.auto import tqdm
 import math
 import os
 import copy
+import random
+import numpy as np
+
+
+def set_global_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) # If using multi-GPU  
+    # Optional: Forces CUDA to use deterministic algorithms (slightly slower, 100% reproducible)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+set_global_seed(24)
 
 # Hyperparametrs
-
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 image_size = 512
 batch_size = 8
-epochs = 200
+epochs = 100
 save_every = 20
 learning_rate = 1e-4
 latent_batch_size = 32
 latent_dim = 4
 latent_size = image_size // 8 # 64
 sequence_length = latent_size * latent_size # 64*64 tokens
-Hidden_Size = 256
+Hidden_Size = 512
 Num_Layers = 12
 Num_Heads = 16
-Patch_Size = 2
-Grid_Size = 4
-# print(f"Is CUDA available? {torch.cuda.is_available()}")
-# if torch.cuda.is_available():
-#     print(f"GPU Name: {torch.cuda.get_device_name(0)}")
+Patch_Size = 4
+Grid_Size = latent_size // Patch_Size # 16
+
+# Paths
+
+latent_cache_path = "cached_smithsonian_latents.pt"
+load_path = "/mnt/lab/asif/Introductory Task/latent_flow_matching_output/dit_best_epoch_280.pth"
+output_dir = "/mnt/lab/asif/Introductory Task/latent_flow_matching_output"
+os.makedirs(output_dir, exist_ok=True)
 
 
-# dataset = load_dataset("huggan/smithsonian_butterflies_subset", split="train")
-
-# transform = transforms.Compose([
-#     # 1. Resize the shortest edge to 512, keeping the original aspect ratio
-#     transforms.Resize(image_size), 
-    
-#     # 2. Chop a perfect 512x512 square out of the center
-#     transforms.CenterCrop(image_size), 
-    
-#     transforms.RandomHorizontalFlip(),
-#     transforms.ToTensor(),
-#     transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-# ])
-
-# def preprocess(examples):
-#     return {"images": [transform(image.convert("RGB")) for image in examples['image']]}
-
-# dataset.set_transform(preprocess)
-# dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-# print(f"Dataset loaded. Batches per epoch: {len(dataloader)}")
 
 
 
@@ -65,7 +63,6 @@ vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(device)
 vae.eval()
 vae.requires_grad_(False)
 
-latent_cache_path = "cached_smithsonian_latents.pt"
 
 # --- The Caching Logic ---
 if os.path.exists(latent_cache_path):
@@ -124,6 +121,13 @@ latent_dataloader = DataLoader(latent_dataset, batch_size=latent_batch_size, shu
 print("Ready to train the DiT!")
 
 
+
+def modulate(x, shift, scale):
+    # Unsqueeze adds the sequence length dimension so the math broadcasts perfectly
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+
+
 class SinusoidalPositionEmbeddings(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -137,100 +141,204 @@ class SinusoidalPositionEmbeddings(nn.Module):
         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
         return embeddings
 
-import torch.nn as nn
 
-class CustomDiT(nn.Module):
-    def __init__(self, latent_dim=4, hidden_size=256, num_layers=6, num_heads=8, patch_size=4, grid_size=16):
+class DiTBlock(nn.Module):
+    def __init__(self, hidden_size, num_heads):
         super().__init__()
         
-        self.patch_size = patch_size
-        self.grid_size = grid_size
-        seq_len = grid_size * grid_size  # 16 * 16 = 256 tokens!
+        # Standard LayerNorms, but we turn off the built-in learnable weights (elementwise_affine=False)
+        # because AdaLN will dynamically generate them!
+        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.attn = nn.MultiheadAttention(hidden_size, num_heads, batch_first=True)
         
-        # 1. Patch Embedding (Using a Convolutional stride to extract 4x4 blocks)
-        self.patch_embed = nn.Conv2d(
-            in_channels=latent_dim, 
-            out_channels=hidden_size, 
-            kernel_size=patch_size, 
-            stride=patch_size
-        )
-        
-        # 2. Positional Embedding (Now matched to the new 256 token length)
-        self.pos_embed = nn.Parameter(torch.randn(1, seq_len, hidden_size) * 0.02)
-        
-        # 3. Time Embedding
-        self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbeddings(hidden_size),
+        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.mlp = nn.Sequential(
             nn.Linear(hidden_size, hidden_size * 4),
             nn.GELU(),
             nn.Linear(hidden_size * 4, hidden_size)
         )
         
-        # 4. Standard Transformer Blocks
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_size, 
-            nhead=num_heads, 
-            dim_feedforward=hidden_size * 4,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True
-        )
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer, 
-            num_layers=num_layers,
-            enable_nested_tensor=False
+        # The AdaLN generator: Takes the time embedding and outputs 6 chunks
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
         
-        # 5. Output Projection
+        # CRITICAL: Initialize to Zero. This means the block starts doing absolutely nothing,
+        # which makes the network highly stable at the beginning of training!
+        nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
+
+    def forward(self, x, c):
+        # c is the time embedding: (Batch, hidden_size)
+        # We chop the 6*hidden_size output into 6 equal pieces
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
+        
+        # --- 1. Attention Path ---
+        x_mod = modulate(self.norm1(x), shift_msa, scale_msa)
+        attn_out, _ = self.attn(x_mod, x_mod, x_mod, need_weights=False)
+        x = x + gate_msa.unsqueeze(1) * attn_out # The gate dynamically controls the flow
+        
+        # --- 2. MLP Path ---
+        x_mod = modulate(self.norm2(x), shift_mlp, scale_mlp)
+        mlp_out = self.mlp(x_mod)
+        x = x + gate_mlp.unsqueeze(1) * mlp_out
+        
+        return x
+
+
+# class CustomDiT(nn.Module):
+#     def __init__(self, latent_dim=4, hidden_size=256, num_layers=6, num_heads=8, patch_size=4, grid_size=16):
+#         super().__init__()
+        
+#         self.patch_size = patch_size
+#         self.grid_size = grid_size
+#         seq_len = grid_size * grid_size  # 16 * 16 = 256 tokens!
+        
+#         # 1. Patch Embedding (Using a Convolutional stride to extract 4x4 blocks)
+#         self.patch_embed = nn.Conv2d(
+#             in_channels=latent_dim, 
+#             out_channels=hidden_size, 
+#             kernel_size=patch_size, 
+#             stride=patch_size
+#         )
+        
+#         # 2. Positional Embedding (Now matched to the new 256 token length)
+#         self.pos_embed = nn.Parameter(torch.randn(1, seq_len, hidden_size) * 0.02)
+        
+#         # 3. Time Embedding
+#         self.time_mlp = nn.Sequential(
+#             SinusoidalPositionEmbeddings(hidden_size),
+#             nn.Linear(hidden_size, hidden_size * 4),
+#             nn.GELU(),
+#             nn.Linear(hidden_size * 4, hidden_size)
+#         )
+        
+#         # 4. Standard Transformer Blocks
+#         encoder_layer = nn.TransformerEncoderLayer(
+#             d_model=hidden_size, 
+#             nhead=num_heads, 
+#             dim_feedforward=hidden_size * 4,
+#             activation="gelu",
+#             batch_first=True,
+#             norm_first=True
+#         )
+#         self.transformer = nn.TransformerEncoder(
+#             encoder_layer, 
+#             num_layers=num_layers,
+#             enable_nested_tensor=False
+#         )
+        
+#         # 5. Output Projection
+#         self.norm_out = nn.LayerNorm(hidden_size)
+        
+#         # We project each hidden token back into 64 elements (4 channels * 4 height * 4 width)
+#         self.proj_out = nn.Linear(hidden_size, latent_dim * patch_size * patch_size)
+
+#     def forward(self, x, t):
+#         # Input: (Batch, 4 channels, 64 height, 64 width)
+#         B, C, H, W = x.shape
+        
+#         # 1. Patchify: (Batch, 4, 64, 64) -> (Batch, hidden_size, 16, 16)
+#         x = self.patch_embed(x)
+        
+#         # 2. Flatten spatial dimensions: (Batch, hidden_size, 256) -> (Batch, 256, hidden_size)
+#         x = x.flatten(2).permute(0, 2, 1)
+        
+#         # 3. Add Positional and Time Embeddings
+#         x = x + self.pos_embed
+#         t_emb = self.time_mlp(t).unsqueeze(1)
+#         x = x + t_emb
+        
+#         # 4. Transformer Attention Math
+#         x = self.transformer(x)
+        
+#         # 5. Un-patchify back to original dimensions
+#         x = self.norm_out(x)
+#         x = self.proj_out(x) # Shape becomes: (Batch, 256, 64)
+        
+#         # Reshape the flat 64 elements back into (4 channels, 4 height, 4 width)
+#         # and map the 256 tokens back into a 16x16 grid
+#         x = x.view(B, self.grid_size, self.grid_size, C, self.patch_size, self.patch_size)
+        
+#         # Rearrange the dimensions to logically reconstruct the image:
+#         # (Batch, Channels, GridHeight, PatchHeight, GridWidth, PatchWidth)
+#         x = x.permute(0, 3, 1, 4, 2, 5).contiguous()
+        
+#         # Melt the grids and patches together: (Batch, 4 channels, 64 height, 64 width)
+#         x = x.view(B, C, self.grid_size * self.patch_size, self.grid_size * self.patch_size)
+        
+#         return x
+
+class CustomDiT(nn.Module):
+    def __init__(self, latent_dim=4, hidden_size=256, num_layers=12, num_heads=12, patch_size=4, grid_size=16):
+        super().__init__()
+        
+        self.patch_size = patch_size
+        self.grid_size = grid_size
+        seq_len = grid_size * grid_size 
+        
+        self.patch_embed = nn.Conv2d(latent_dim, hidden_size, kernel_size=patch_size, stride=patch_size)
+        self.pos_embed = nn.Parameter(torch.randn(1, seq_len, hidden_size) * 0.02)
+        
+        self.time_mlp = nn.Sequential(
+            SinusoidalPositionEmbeddings(hidden_size),
+            nn.Linear(hidden_size, hidden_size * 4),
+            nn.GELU(),
+            nn.Linear(hidden_size * 4, hidden_size) # Outputs shape: (Batch, hidden_size)
+        )
+        
+        # --- THE NEW BLOCKS ---
+        # We use an nn.ModuleList to hold our custom blocks
+        self.blocks = nn.ModuleList([
+            DiTBlock(hidden_size, num_heads) for _ in range(num_layers)
+        ])
+        # ----------------------
+        
         self.norm_out = nn.LayerNorm(hidden_size)
-        
-        # We project each hidden token back into 64 elements (4 channels * 4 height * 4 width)
         self.proj_out = nn.Linear(hidden_size, latent_dim * patch_size * patch_size)
 
     def forward(self, x, t):
-        # Input: (Batch, 4 channels, 64 height, 64 width)
         B, C, H, W = x.shape
         
-        # 1. Patchify: (Batch, 4, 64, 64) -> (Batch, hidden_size, 16, 16)
-        x = self.patch_embed(x)
-        
-        # 2. Flatten spatial dimensions: (Batch, hidden_size, 256) -> (Batch, 256, hidden_size)
-        x = x.flatten(2).permute(0, 2, 1)
-        
-        # 3. Add Positional and Time Embeddings
+        # 1. Patchify and add Positional Embeddings
+        x = self.patch_embed(x).flatten(2).permute(0, 2, 1)
         x = x + self.pos_embed
-        t_emb = self.time_mlp(t).unsqueeze(1)
-        x = x + t_emb
         
-        # 4. Transformer Attention Math
-        x = self.transformer(x)
+        # 2. Extract Time Embedding
+        t_emb = self.time_mlp(t) # Shape: (Batch, hidden_size)
         
-        # 5. Un-patchify back to original dimensions
+        # 3. Loop through the custom blocks!
+        # Notice how we pass the time embedding (t_emb) into EVERY layer!
+        for block in self.blocks:
+            x = block(x, t_emb)
+            
+        # 4. Output processing
         x = self.norm_out(x)
-        x = self.proj_out(x) # Shape becomes: (Batch, 256, 64)
+        x = self.proj_out(x) 
         
-        # Reshape the flat 64 elements back into (4 channels, 4 height, 4 width)
-        # and map the 256 tokens back into a 16x16 grid
+        # Un-patchify back to image dimensions (same as before)
         x = x.view(B, self.grid_size, self.grid_size, C, self.patch_size, self.patch_size)
-        
-        # Rearrange the dimensions to logically reconstruct the image:
-        # (Batch, Channels, GridHeight, PatchHeight, GridWidth, PatchWidth)
         x = x.permute(0, 3, 1, 4, 2, 5).contiguous()
-        
-        # Melt the grids and patches together: (Batch, 4 channels, 64 height, 64 width)
         x = x.view(B, C, self.grid_size * self.patch_size, self.grid_size * self.patch_size)
         
         return x
 
+
 @torch.no_grad()
-def generate_latent_samples(model, vae, device, num_samples=4, steps=20, noisy_samples=None):
+def generate_latent_samples(model, vae, device, num_samples=4, steps=20, noisy_samples=None, seed=-1):
     model.eval()
     
+    if seed == -1:
+        seed = random.randint(0, 2**32 - 1)
+
+    gen = torch.Generator(device=device).manual_seed(seed)
+
     # 1. Start with pure latent noise at the new 64x64 size!
     if noisy_samples is not None:
         x = noisy_samples.clone()
     else:
-        x = torch.randn(num_samples, 4, 64, 64, device=device)
+        x = torch.randn(num_samples, 4, 64, 64, device=device, generator=gen)
 
     dt = 1.0 / steps
     
@@ -245,7 +353,7 @@ def generate_latent_samples(model, vae, device, num_samples=4, steps=20, noisy_s
     images = vae.decode(x).sample
     
     model.train()
-    return images
+    return images, seed
 
 
 model = CustomDiT(
@@ -255,16 +363,16 @@ model = CustomDiT(
     patch_size=Patch_Size,
     grid_size=Grid_Size
 ).to(device)
+
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
 
-load_path = "/mnt/lab/asif/Introductory Task/latent_flow_matching_output/dit_best_epoch_968.pth"
 start_epoch = 0 # Default starting point
 
 if os.path.exists(load_path):
     print(f"Resuming! Loading weights from {load_path} into existing model...")
     # This single line pours the saved weights directly into your 'model' variable
     model.load_state_dict(torch.load(load_path, map_location=device, weights_only=True))
-    start_epoch = 980
+    start_epoch = 280
 else:
     print("No save file found. Starting completely fresh!")
 
@@ -272,8 +380,6 @@ else:
 total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Total Trainable Parameters: {total_params:,}")
 
-output_dir = "/mnt/lab/asif/Introductory Task/latent_flow_matching_output"
-os.makedirs(output_dir, exist_ok=True)
 
 best_window_loss = float('inf')
 best_window_weights = None
@@ -320,46 +426,38 @@ for epoch in range(start_epoch, start_epoch + epochs):
     print(f"Epoch {epoch+1} Average Loss: {avg_loss:.4f}")
     
     # --- Track Best Model in Window ---
-    if avg_loss < best_window_loss:
-        best_window_loss = avg_loss
-        best_window_epoch = epoch + 1
-        best_window_weights = copy.deepcopy(model.state_dict())
+    # if avg_loss < best_window_loss:
+    #     best_window_loss = avg_loss
+    #     best_window_epoch = epoch + 1
+    #     best_window_weights = copy.deepcopy(model.state_dict())
         
     # --- Window End: Checkpoint & Generate ---
     if (epoch + 1) % save_every == 0:
-        print(f"\n--- Saving Best Model from past {save_every} Epochs ---")
+        # print(f"\n--- Saving Best Model from past {save_every} Epochs ---")
         
-        weight_path = os.path.join(output_dir, f"dit_best_epoch_{best_window_epoch}.pth")
-        torch.save(best_window_weights, weight_path)
-        
+        # weight_path = os.path.join(output_dir, f"dit_best_epoch_{best_window_epoch}.pth")
+        # torch.save(best_window_weights, weight_path)
+        torch.save(model.state_dict(), os.path.join(output_dir, f"dit_best_epoch_{epoch+1}.pth"))
+
+
         # State Swap for Generation
-        latest_weights = copy.deepcopy(model.state_dict())
-        model.load_state_dict(best_window_weights)
+        # latest_weights = copy.deepcopy(model.state_dict())
+        # model.load_state_dict(best_window_weights)
         
         # Generate Images (This still uses the VAE inside the function to decode)
-        # Using 2 images here to save time and VRAM during mid-training checks
-        samples = generate_latent_samples(model, vae, device, num_samples=16, steps=50, noisy_samples=noisy_samples)
+        samples, seed = generate_latent_samples(model, vae, device, num_samples=16, steps=50, noisy_samples=noisy_samples)
         samples = (samples / 2 + 0.5).clamp(0, 1).cpu()
         
-        image_path = os.path.join(output_dir, f"latent_generation_epoch_{best_window_epoch}.png")
+        image_path = os.path.join(output_dir, f"latent_generation_epoch_{epoch+1}.png")
         save_image(samples, image_path, nrow=4)
 
         image_path = os.path.join(output_dir, f"temp.png")
         save_image(samples, image_path, nrow=4)
         
-        # # Plotting inline
-        # fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-        # for i, ax in enumerate(axes.flatten()):
-        #     ax.imshow(samples[i].permute(1, 2, 0).numpy())
-        #     ax.axis("off")
-        # plt.suptitle(f"Latent DiT - Best Epoch {best_window_epoch}")
-        # plt.tight_layout()
-        # plt.show()
-        
         # Restore latest weights
-        model.load_state_dict(latest_weights)
-        best_window_loss = float('inf')
-        best_window_weights = None
+        # model.load_state_dict(latest_weights)
+        # best_window_loss = float('inf')
+        # best_window_weights = None
 
 torch.save(model.state_dict(), os.path.join(output_dir, "dit_final.pth"))
 print("Latent Flow-Matching Training Complete!")
