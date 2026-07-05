@@ -34,7 +34,7 @@ python3 prompt_conditioned_flow_matching.py
 ```
 
 ## Inference
-
+Change the file paths and run the following command. 
 ```bash
 python3 inference.py
 ```
