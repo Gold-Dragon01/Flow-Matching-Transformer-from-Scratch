@@ -32,7 +32,7 @@ set_global_seed(24)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 image_size = 512
 batch_size = 8
-epochs = 200
+epochs = 500
 save_every = 20
 learning_rate = 1e-4
 latent_batch_size = 32
@@ -40,17 +40,17 @@ latent_dim = 4
 latent_size = image_size // 8 # 64
 sequence_length = latent_size * latent_size # 64*64 tokens
 Hidden_Size = 512
-Num_Layers = 12
+Num_Layers = 10
 Num_Heads = 16
-Patch_Size = 4
+Patch_Size = 2
 Grid_Size = latent_size // Patch_Size # 16
 
 # Paths
 
 latent_cache_path = "cached_smithsonian_latents.pt"
-cache_save_path = "smithsonian_latents_and_prompts.pt"
-load_path = "/mnt/lab/asif/Introductory Task/model_checkpoints/dit_epoch_200.pt"
-output_dir = "/mnt/lab/asif/Introductory Task/latent_flow_matching_output"
+cache_save_path = "smithsonian_latents_and_prompts_v2.pt"
+load_path = "/mnt/lab/asif/Prompt/model_checkpoints_v2/dit_epoch_100.pt"
+output_dir = "/mnt/lab/asif/Prompt/latent_flow_matching_output"
 os.makedirs(output_dir, exist_ok=True)
 
 
@@ -249,7 +249,7 @@ if os.path.exists(load_path):
     print(f"Resuming! Loading weights from {load_path} into existing model...")
     # This single line pours the saved weights directly into your 'model' variable
     model.load_state_dict(torch.load(load_path, map_location=device, weights_only=True))
-    start_epoch = 200
+    start_epoch = 100
 else:
     print("No save file found. Starting completely fresh!")
 
@@ -276,10 +276,10 @@ clip_model.eval()
 
 # --- 2. Define Fixed Evaluation Prompts ---
 eval_prompts = [
-    "a butterfly with orange wings and black spots",
-    "a butterfly with red and black wings",
-    "a butterfly with black and white wings",
-    "" # The Null Token (Unconditional generation test!)
+    "a red butterfly",
+    "an orange butterfly with black stripes",
+    "a blue butterfly with yellow spots",
+    "a yellow butterfly with black spots" # The Null Token (Unconditional generation test!)
 ]
 
 print("Generating fixed evaluation contexts...")
@@ -294,8 +294,8 @@ with torch.no_grad():
     fixed_noise = torch.randn(4, 4, 64, 64, device=device)
 
 # Create a folder to save our progress
-os.makedirs("training_progress", exist_ok=True)
-os.makedirs("model_checkpoints", exist_ok=True)
+os.makedirs("training_progress_v2", exist_ok=True)
+os.makedirs("model_checkpoints_v2", exist_ok=True)
 
 # --- 3. The Main Training Loop ---
 for epoch in range(start_epoch, start_epoch+epochs):
@@ -339,17 +339,17 @@ for epoch in range(start_epoch, start_epoch+epochs):
         print(f"Saving checkpoint and generating samples for Epoch {epoch + 1}...")
         
         # A. Save the Model Weights
-        save_path = f"model_checkpoints/dit_epoch_{epoch + 1}.pt"
+        save_path = f"model_checkpoints_v2/dit_epoch_{epoch + 1}.pt"
         torch.save(model.state_dict(), save_path)
         
-        generated_images, _ = generate_latent_samples(model=model,vae=vae,device=device,text_context=fixed_text_context,num_samples=4,steps=20,noisy_samples=fixed_noise,seed=42)
+        generated_images, _ = generate_latent_samples(model=model,vae=vae,device=device,text_context=fixed_text_context,num_samples=4,steps=50,noisy_samples=fixed_noise,seed=42)
         
         # Normalize images from [-1, 1] to [0, 1] for saving
         generated_images = (generated_images / 2 + 0.5).clamp(0, 1)
-        image_path = f"training_progress/samples_epoch_{epoch + 1}.png"
+        image_path = f"training_progress_v2/samples_epoch_{epoch + 1}.png"
         save_image(generated_images, image_path, nrow=2)
             
-        image_path = f"training_progress/temp.png"
+        image_path = f"training_progress_v2/temp.png"
         save_image(generated_images, image_path, nrow=2)
 
         print(f"✅ Checkpoint and Samples saved!")
