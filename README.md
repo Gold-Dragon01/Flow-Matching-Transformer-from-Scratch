@@ -27,6 +27,7 @@ python3 prepare_dataset.py
 ```
 
 ## Run the model
+Change the file paths and run the following command. 
 
 ```bash
 python3 prompt_conditioned_flow_matching.py
