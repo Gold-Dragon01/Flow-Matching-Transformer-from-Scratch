@@ -113,10 +113,11 @@ The main settings you are most likely to change in `src/butterfly_dit/config.py`
 
 ## Expected Workflow
 
-1. Prepare latent caches.
-2. Generate prompts and the combined training cache.
-3. Train the model.
-4. Run inference or start the API using the resulting checkpoint.
+1. Change the configuration as needed.
+2. Prepare latent embeddings.
+3. Generate prompts and the combined latent+prompt embeddings cache.
+4. Train the model.
+5. Run inference or start the API using the resulting checkpoint.
 
 ## Notes
 
