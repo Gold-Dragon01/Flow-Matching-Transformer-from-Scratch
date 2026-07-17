@@ -26,7 +26,7 @@ Activate it:
 .venv\Scripts\activate
 ```
 
-### 2. Install dependencies
+### 2. Install Dependencies
 
 Install the packages used by the project.
 
@@ -36,7 +36,7 @@ pip install torch torchvision transformers datasets diffusers fastapi uvicorn py
 
 If you need a CUDA-specific PyTorch build, install the wheel that matches your system before the other packages.
 
-### 3. Prepare the data cache
+### 3. Prepare the Embeddings and Prompts
 
 The repository uses cached latents and prompt embeddings under `artifacts/cache/`.
 
