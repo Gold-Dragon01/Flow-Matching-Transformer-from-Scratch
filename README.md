@@ -1,40 +1,118 @@
 # Butterfly DiT Image Generation Pipeline
 
-A complete end-to-end machine learning pipeline for generating high-quality butterfly images using a Diffusion Transformer (DiT). This project covers automated dataset captioning, model training conditioning, and a high-performance FastAPI inference server.
+This repository implements a Diffusion Transformer pipeline for butterfly image generation. It includes latent embedding generation and cache the embeddings, prompt generation for butterfly images and make combined embeddings for image and their corresponding prompts, training, offline inference, and a FastAPI inference server.
 
-## Overview
+The project now follows a standard `src`-based Python layout:
 
-This project is divided into two primary components:
-1. **Automated Vision-Language Data Preparation:** Using `Qwen2-VL-2B-Instruct` to generate highly specific, rigidly formatted spatial and geometric captions (e.g., *"blue wings, white spots on outer edges"*) from the Smithsonian Butterflies dataset. 
-2. **FastAPI Inference Server:** A production-ready API that loads the DiT, VAE, and CLIP models into global memory on startup and serves images via a robust generation endpoint.
+- `src/butterfly_dit/` contains reusable library code
+- `scripts/` contains runnable workflows
+- `configs/` is reserved for future run presets and experiment settings
+- `artifacts/` stores caches, checkpoints, and generated outputs
+- `tests/` is reserved for future automated checks
 
-## Features
-* **Zero-Noise Captioning:** Employs Prompt Engineering (Domain Shift technique) on Qwen2-VL to enforce strict noun-and-feature-based outputs, avoiding conversational filler that degrades CLIP embeddings.
-* **Smart Memory Management:** The API uses FastAPI's lifespan/startup events to load heavy PyTorch models once, preventing VRAM overflow and minimizing response times.
-* **Half-Precision Optimization:** Uses `bfloat16` and Safetensors to safely run large vision-language models alongside diffusion pipelines without crashing standard GPUs.
+## Quick Start
 
-## Installation
+### 1. Create an environment
 
-Ensure you have Python 3.10+ installed. Install the required dependencies:
-
-```bash
-pip install torch transformers datasets qwen-vl-utils pillow fastapi uvicorn pydantic
-```
-## Data Preparation
+Python 3.10 or newer is recommended.
 
 ```bash
-python3 prepare_dataset.py
+python -m venv .venv
 ```
 
-## Run the model
-Change the file paths and run the following command. 
+Activate it:
 
 ```bash
-python3 prompt_conditioned_flow_matching.py
+.venv\Scripts\activate
 ```
 
-## Inference
-Change the file paths and run the following command. 
+### 2. Install dependencies
+
+Install the packages used by the project.
+
 ```bash
-python3 inference.py
+pip install torch torchvision transformers datasets diffusers fastapi uvicorn pydantic pillow tqdm qwen-vl-utils numpy safetensors
 ```
+
+If you need a CUDA-specific PyTorch build, install the wheel that matches your system before the other packages.
+
+### 3. Prepare the data cache
+
+The repository uses cached latents and prompt embeddings under `artifacts/cache/`.
+
+Run latent generation first:
+
+```bash
+python scripts/data/prepare_latent_embedding.py
+```
+
+Then build the combined latent/text cache:
+
+```bash
+python scripts/data/prepare_dataset.py
+```
+
+### 4. Train the model
+
+```bash
+python scripts/train.py
+```
+
+Training checkpoints are written to `artifacts/checkpoints/`, and sample images are written to `artifacts/samples/`.
+
+### 5. Run offline inference
+
+```bash
+python scripts/inference.py
+```
+
+This writes a generated image to the artifacts area configured by the scripts.
+
+### 6. Start the API server
+
+```bash
+uvicorn scripts.api:app --host 0.0.0.0 --port 8000
+```
+
+## Artifact Locations
+
+The default paths are defined in `src/butterfly_dit/config.py`.
+
+- `artifacts/cache/` for cached latents and prompt CSV files
+- `artifacts/checkpoints/` for model weights
+- `artifacts/samples/` for generated training previews
+- `artifacts/hf_cache/` for Hugging Face downloads used by the data-preparation workflow
+
+If you want to relocate outputs, change `ARTIFACTS_DIR` in `src/butterfly_dit/config.py`. The derived cache and output paths will follow automatically.
+
+## Project Structure
+
+- `src/butterfly_dit/config.py` centralizes paths and model settings
+- `src/butterfly_dit/modeling.py` defines the DiT model and sampling loop
+- `src/butterfly_dit/runtime.py` holds reusable loading and encoding helpers
+- `scripts/train.py` runs training
+- `scripts/inference.py` runs batch inference
+- `scripts/api.py` serves the API
+- `scripts/data/prepare_latent_embedding.py` creates the latent cache
+- `scripts/data/prepare_dataset.py` creates the prompt and combined training cache
+
+## Configuration
+
+The main settings you are most likely to change are:
+
+- `ARTIFACTS_DIR` for the root output folder
+- `HF_CACHE_DIR` for Hugging Face downloads
+- `CHECKPOINT_PATH` for the model checkpoint used by inference and the API
+- `DATASET_NAME` if you want a different dataset source
+- `EPOCHS`, `SAVE_EVERY`, and `LEARNING_RATE` for training behavior
+
+## Expected Workflow
+
+1. Prepare latent caches.
+2. Generate prompts and the combined training cache.
+3. Train the model.
+4. Run inference or start the API using the resulting checkpoint.
+
+## Notes
+
+Generated files should stay out of the repository root. The `artifacts/` directory is the canonical place for outputs, caches, and checkpoints.
