@@ -1,6 +1,6 @@
 # Butterfly DiT Image Generation Pipeline
 
-This repository implements a Diffusion Transformer pipeline for butterfly image generation. It includes latent embedding generation and cache the embeddings, prompt generation for butterfly images and make combined embeddings for image and their corresponding prompts, training, offline inference, and a FastAPI inference server.
+This repository implements a Diffusion Transformer pipeline from scratch for butterfly image generation. It includes latent embedding generation and cache the embeddings, prompt generation for butterfly images and make combined embeddings for image and their corresponding prompts, training, offline inference, and a FastAPI inference server.
 
 The project now follows a standard `src`-based Python layout:
 
