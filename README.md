@@ -1,4 +1,4 @@
-# Butterfly DiT Image Generation Pipeline
+# Flow Matching Image Generation Pipeline
 
 This repository implements a Flow Matching Transformer pipeline from scratch for image generation. It includes latent embedding generation and cache the embeddings, prompt generation for butterfly images and make combined embeddings for image and their corresponding prompts, training, offline inference, and a FastAPI inference server.
 
