@@ -34,7 +34,12 @@ pip install torch torchvision transformers datasets diffusers fastapi uvicorn py
 
 If you need a CUDA-specific PyTorch build, install the wheel that matches your system before the other packages.
 
-### 3. Prepare the Embeddings and Prompts
+### 3. Configure Parameters and Paths
+
+Change the configurations as you need from `src/butterfly_dit/config.py`
+
+
+### 4. Prepare the Embeddings and Prompts
 
 The repository uses cached latents and prompt embeddings under `artifacts/cache/`.
 
@@ -50,7 +55,7 @@ Then build the combined latent/text cache:
 python scripts/data/prepare_dataset.py
 ```
 
-### 4. Train the model
+### 5. Train the model
 
 ```bash
 python scripts/train.py
@@ -58,7 +63,7 @@ python scripts/train.py
 
 Training checkpoints are written to `artifacts/checkpoints/`, and sample images are written to `artifacts/samples/`.
 
-### 5. Run offline inference
+### 6. Run offline inference
 
 ```bash
 python scripts/inference.py
@@ -66,7 +71,7 @@ python scripts/inference.py
 
 This writes a generated image to the artifacts area configured by the scripts.
 
-### 6. Start the API server
+### 7. Start the API server
 
 ```bash
 uvicorn scripts.api:app --host 0.0.0.0 --port 8000
@@ -96,12 +101,14 @@ If you want to relocate outputs, change `ARTIFACTS_DIR` in `src/butterfly_dit/co
 
 ## Configuration
 
-The main settings you are most likely to change are:
+The main settings you are most likely to change in `src/butterfly_dit/config.py` file are:
 
+- `HYPERPARAMETERS` for the DiT Model 
 - `ARTIFACTS_DIR` for the root output folder
 - `HF_CACHE_DIR` for Hugging Face downloads
-- `CHECKPOINT_PATH` for the model checkpoint used by inference and the API
+- `CHECKPOINT_PATH` for the model checkpoint used by inference and the API and `START_EPOCH` if starting training from that checkpoint
 - `DATASET_NAME` if you want a different dataset source
+- `PRE-TRAINED MODEL NAMES` if you want to use different pre-trained models
 - `EPOCHS`, `SAVE_EVERY`, and `LEARNING_RATE` for training behavior
 
 ## Expected Workflow
