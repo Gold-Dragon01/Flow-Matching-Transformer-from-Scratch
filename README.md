@@ -20,8 +20,16 @@ python -m venv .venv
 
 Activate it:
 
+On Windows:
+
 ```bash
 .venv\Scripts\activate
+```
+
+On Linux/macOS:
+
+```bash
+source .venv/bin/activate
 ```
 
 ### 2. Install Dependencies
@@ -29,7 +37,7 @@ Activate it:
 Install the packages used by the project.
 
 ```bash
-pip install torch torchvision transformers datasets diffusers fastapi uvicorn pydantic pillow tqdm qwen-vl-utils numpy safetensors
+pip install -r requirements.txt
 ```
 
 If you need a CUDA-specific PyTorch build, install the wheel that matches your system before the other packages.

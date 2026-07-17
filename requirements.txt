@@ -1,0 +1,13 @@
+torch
+torchvision
+transformers
+datasets
+diffusers
+fastapi
+uvicorn
+pydantic
+pillow
+tqdm
+qwen-vl-utils
+numpy
+safetensors
