@@ -6,9 +6,7 @@ The project now follows a standard `src`-based Python layout:
 
 - `src/butterfly_dit/` contains reusable library code
 - `scripts/` contains runnable workflows
-- `configs/` is reserved for future run presets and experiment settings
 - `artifacts/` stores caches, checkpoints, and generated outputs
-- `tests/` is reserved for future automated checks
 
 ## Quick Start
 
